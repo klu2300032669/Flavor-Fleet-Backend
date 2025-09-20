@@ -44,7 +44,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/**", "/api/public/**").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/menu/**").permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/contact").permitAll()
-                
+                .requestMatchers("/","/error").permitAll()
                 // Swagger / OpenAPI
                 .requestMatchers(
                     "/v3/api-docs/**",
@@ -85,7 +85,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.asList("http://localhost:8484", "http://localhost:8885"));
+        configuration.setAllowedOrigins(Arrays.asList("http://localhost:8484", "http://localhost:8885", "http://localhost:8081"));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
         configuration.setAllowCredentials(true);
