@@ -1,4 +1,3 @@
-
 package com.flavorfleet.controller;
 
 import com.flavorfleet.dto.CategoryDTO;
@@ -19,7 +18,6 @@ import java.util.List;
 public class MenuController {
 
     private static final Logger logger = LoggerFactory.getLogger(MenuController.class);
-
     private final MenuService menuService;
 
     public MenuController(MenuService menuService) {

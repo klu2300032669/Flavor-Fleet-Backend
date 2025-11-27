@@ -16,9 +16,7 @@ import java.util.stream.Collectors;
 
 @Service
 public class MenuService {
-
     private static final Logger logger = LoggerFactory.getLogger(MenuService.class);
-
     private final MenuItemRepository menuItemRepository;
     private final CategoryRepository categoryRepository;
 
@@ -31,6 +29,16 @@ public class MenuService {
     public List<MenuItemDTO> getAllMenuItems() {
         logger.info("Fetching all menu items");
         return menuItemRepository.findAll().stream()
+                .filter(item -> item.getCategory() == null || !item.getCategory().isDeleted())
+                .map(this::toDTO)
+                .collect(Collectors.toList());
+    }
+
+    // NEW: Added for type and price filtering
+    @Transactional(readOnly = true)
+    public List<MenuItemDTO> getMenuItemsByTypeAndPrice(String type, Double minPrice, Double maxPrice) {
+        logger.info("Fetching menu items for type: {}, minPrice: {}, maxPrice: {}", type, minPrice, maxPrice);
+        return menuItemRepository.findByTypeAndPrice(type, minPrice, maxPrice).stream()
                 .filter(item -> item.getCategory() == null || !item.getCategory().isDeleted())
                 .map(this::toDTO)
                 .collect(Collectors.toList());
