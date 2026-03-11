@@ -18,10 +18,13 @@ import java.util.function.Function;
 
 @Component
 public class JwtUtil {
-
     private static final Logger logger = LoggerFactory.getLogger(JwtUtil.class);
     private final String SECRET_KEY;
     private final SecretKey key;
+
+    // NEW: Constants for token validity
+    private static final long ACCESS_TOKEN_VALIDITY = 1000 * 60 * 60; // 1 hour
+    private static final long REFRESH_TOKEN_VALIDITY = 1000 * 60 * 60 * 24 * 7; // 7 days
 
     public JwtUtil() {
         // Retrieve secret from environment (no hardcoded fallback for security)
@@ -33,7 +36,6 @@ public class JwtUtil {
         byte[] decodedKey = Base64.getDecoder().decode(SECRET_KEY);
         this.key = Keys.hmacShaKeyFor(decodedKey);
         logger.info("JWT secret key initialized");
-        
     }
 
     public String getEmailFromToken(String token) {
@@ -63,7 +65,33 @@ public class JwtUtil {
         }
     }
 
-    // Add this method to your existing JwtUtil class
+    // NEW: Method to generate access token
+    public String generateAccessToken(String email) {
+        Map<String, Object> claims = new HashMap<>();
+        return createToken(claims, email, ACCESS_TOKEN_VALIDITY);
+    }
+
+    // NEW: Method to generate refresh token
+    public String generateRefreshToken(String email) {
+        Map<String, Object> claims = new HashMap<>();
+        return createToken(claims, email, REFRESH_TOKEN_VALIDITY);
+    }
+
+    private String createToken(Map<String, Object> claims, String subject, long validity) {
+        try {
+            return Jwts.builder()
+                .setClaims(claims)
+                .setSubject(subject)
+                .setIssuedAt(new Date(System.currentTimeMillis()))
+                .setExpiration(new Date(System.currentTimeMillis() + validity))
+                .signWith(key, SignatureAlgorithm.HS256)
+                .compact();
+        } catch (Exception e) {
+            logger.error("Failed to create token for subject {}: {}", subject, e.getMessage());
+            throw e;
+        }
+    }
+
     public Boolean validateToken(String token) {
         try {
             final String email = getEmailFromToken(token);
@@ -71,26 +99,6 @@ public class JwtUtil {
         } catch (Exception e) {
             logger.error("Token validation failed: {}", e.getMessage());
             return false;
-        }
-    }
-
-    public String generateToken(String email) {
-        Map<String, Object> claims = new HashMap<>();
-        return createToken(claims, email);
-    }
-
-    private String createToken(Map<String, Object> claims, String subject) {
-        try {
-            return Jwts.builder()
-                .setClaims(claims)
-                .setSubject(subject)
-                .setIssuedAt(new Date(System.currentTimeMillis()))
-                .setExpiration(new Date(System.currentTimeMillis() + 1000 * 86400)) // 24 hours
-                .signWith(key, SignatureAlgorithm.HS256)
-                .compact();
-        } catch (Exception e) {
-            logger.error("Failed to create token for subject {}: {}", subject, e.getMessage());
-            throw e;
         }
     }
 

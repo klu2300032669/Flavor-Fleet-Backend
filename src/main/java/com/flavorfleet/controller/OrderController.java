@@ -8,10 +8,12 @@ import com.flavorfleet.service.OrderService;
 import com.flavorfleet.service.UserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -35,53 +37,47 @@ public class OrderController {
     public ResponseEntity<List<OrderDTO>> getOrders(HttpServletRequest request) {
         String token = extractToken(request);
         String email = jwtUtil.getEmailFromToken(token);
+
         List<Order> orders = orderService.getOrders(email);
         List<OrderDTO> orderDTOs = orders.stream()
-                .map(order -> new OrderDTO(
-                        order.getId(),
-                        order.getUser().getEmail(),
-                        order.getUser().getName(),
-                        order.getTotalPrice(),
-                        order.getStatus(),
-                        order.getCreatedAt(),
-                        order.getItems().stream()
-                                .map(item -> new CartItemDTO(
-                                        item.getId(),
-                                        item.getItemId(),
-                                        item.getName(),
-                                        item.getPrice(),
-                                        item.getQuantity(),
-                                        item.getImage()))
-                                .collect(Collectors.toList()),
-                        order.getAddressLine1(),
-                        order.getAddressLine2(),
-                        order.getCity(),
-                        order.getPincode()))
+                .map(this::mapToOrderDTO)
                 .collect(Collectors.toList());
+
         logger.info("Orders fetched successfully for email: {}", email);
         return ResponseEntity.ok(orderDTOs);
     }
 
     @PostMapping
-    public ResponseEntity<OrderDTO> createOrder(@RequestBody OrderDTO orderDTO, HttpServletRequest request) {
-        String token = extractToken(request);
-        String email = jwtUtil.getEmailFromToken(token);
+    public ResponseEntity<?> createOrder(@Valid @RequestBody OrderDTO orderDTO, HttpServletRequest request) {
+        try {
+            String token = extractToken(request);
+            String email = jwtUtil.getEmailFromToken(token);
 
-        // Delegate to the service to create the Order entity
-        Order savedOrder = orderService.saveOrder(orderDTO, email);
+            Order savedOrder = orderService.saveOrder(orderDTO, email);
 
-        // Clear the cart after order creation
-        userService.clearCart(email);
+            OrderDTO savedOrderDTO = mapToOrderDTO(savedOrder);
 
-        // Map the saved Order to OrderDTO for the response
-        OrderDTO savedOrderDTO = new OrderDTO(
-                savedOrder.getId(),
-                savedOrder.getUser().getEmail(),
-                savedOrder.getUser().getName(),
-                savedOrder.getTotalPrice(),
-                savedOrder.getStatus(),
-                savedOrder.getCreatedAt(),
-                savedOrder.getItems().stream()
+            logger.info("Order created successfully with ID: {} for email: {}", savedOrder.getId(), email);
+            return ResponseEntity.ok(savedOrderDTO);
+        } catch (IllegalArgumentException e) {
+            logger.warn("Order creation failed due to validation: {}", e.getMessage());
+            return ResponseEntity.badRequest().body(new AdminController.ErrorResponse(e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Order creation failed", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AdminController.ErrorResponse("Failed to create order: " + e.getMessage()));
+        }
+    }
+
+    private OrderDTO mapToOrderDTO(Order order) {
+        return new OrderDTO(
+                order.getId(),
+                order.getUser().getEmail(),
+                order.getUser().getName(),
+                order.getTotalPrice(),
+                order.getStatus(),
+                order.getCreatedAt(),
+                order.getItems().stream()
                         .map(item -> new CartItemDTO(
                                 item.getId(),
                                 item.getItemId(),
@@ -90,12 +86,11 @@ public class OrderController {
                                 item.getQuantity(),
                                 item.getImage()))
                         .collect(Collectors.toList()),
-                savedOrder.getAddressLine1(),
-                savedOrder.getAddressLine2(),
-                savedOrder.getCity(),
-                savedOrder.getPincode());
-        logger.info("Order created successfully with ID: {} for email: {}", savedOrder.getId(), email);
-        return ResponseEntity.ok(savedOrderDTO);
+                order.getAddressLine1(),
+                order.getAddressLine2(),
+                order.getCity(),
+                order.getPincode()
+        );
     }
 
     private String extractToken(HttpServletRequest request) {
@@ -103,6 +98,6 @@ public class OrderController {
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             return authHeader.substring(7);
         }
-        throw new RuntimeException("Missing or invalid Authorization header");
+        throw new IllegalArgumentException("Missing or invalid Authorization header");
     }
 }

@@ -1,7 +1,8 @@
 package com.flavorfleet.dto;
 
 public class LoginResponse {
-    private String token;
+    private String token;  // Now accessToken
+    private String refreshToken;  // NEW
     private String email;
     private String name;
     private String message;
@@ -19,6 +20,14 @@ public class LoginResponse {
 
     public void setToken(String token) {
         this.token = token;
+    }
+
+    public String getRefreshToken() {
+        return refreshToken;
+    }
+
+    public void setRefreshToken(String refreshToken) {
+        this.refreshToken = refreshToken;
     }
 
     public String getEmail() {

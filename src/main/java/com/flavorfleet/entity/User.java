@@ -7,6 +7,7 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -34,24 +35,30 @@ public class User {
 
     @Column(nullable = false)
     @NotNull(message = "Role cannot be null")
-    private String role = "ROLE_USER"; // Default to ROLE_USER
+    private String role = "ROLE_USER";
+
+    @Column(nullable = true)
+    private LocalDateTime lastLogin;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
 
     @Column
     private String profilePicture;
 
-    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
+    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)
     @JsonIgnore
     private List<Order> orders = new ArrayList<>();
 
-    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
+    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)
     @JsonIgnore
     private List<CartItem> cartItems = new ArrayList<>();
 
-    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
+    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)
     @JsonIgnore
     private List<FavoriteItem> favoriteItems = new ArrayList<>();
 
-    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
+    @OneToMany(mappedBy = "user", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Address> addresses = new ArrayList<>();
 
     @Column(nullable = true)
@@ -63,53 +70,196 @@ public class User {
     @Column(nullable = true)
     private Boolean desktopNotifications = false;
 
-    public User() {}
+    @Column(nullable = false)
+    private boolean active = true;
+
+    // NEW: Field for password change requirement
+    @Column(nullable = false)
+    private boolean passwordChanged = true; // Default true for normal users
+
+    // Bidirectional OneToOne – inverse side (non-owning)
+    @OneToOne(mappedBy = "owner", fetch = FetchType.LAZY,
+              cascade = CascadeType.ALL, orphanRemoval = true)
+    @JsonIgnore
+    private Restaurant restaurant;
+
+    // Constructors
+    public User() {
+    }
 
     public User(String name, String email, String password, String role) {
         this.name = name;
         this.email = email;
         this.password = password;
-        this.role = role != null && role.startsWith("ROLE_") ? role : "ROLE_" + (role != null ? role.toUpperCase() : "USER");
+        this.role = (role != null && role.startsWith("ROLE_"))
+                ? role
+                : "ROLE_" + (role != null ? role.toUpperCase() : "USER");
         this.emailOrderUpdates = false;
         this.emailPromotions = false;
         this.desktopNotifications = false;
+        this.active = true;
+        // NEW: Default passwordChanged to true
+        this.passwordChanged = true;
     }
 
-    public Long getId() { return id; }
-    public void setId(Long id) { this.id = id; }
-    public String getName() { return name; }
-    public void setName(String name) { this.name = name; }
-    public String getEmail() { return email; }
-    public void setEmail(String email) { this.email = email; }
-    public String getPassword() { return password; }
-    public void setPassword(String password) { this.password = password; }
-    public String getRole() { return role; }
-    public void setRole(String role) { this.role = role.startsWith("ROLE_") ? role : "ROLE_" + role.toUpperCase(); }
-    public String getProfilePicture() { return profilePicture; }
-    public void setProfilePicture(String profilePicture) { this.profilePicture = profilePicture; }
-    public List<Order> getOrders() { return orders; }
-    public void setOrders(List<Order> orders) { 
+    @PrePersist
+    protected void onCreate() {
+        if (this.createdAt == null) {
+            this.createdAt = LocalDateTime.now();
+        }
+    }
+
+    // Getters and Setters
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email;
+    }
+
+    public String getPassword() {
+        return password;
+    }
+
+    public void setPassword(String password) {
+        this.password = password;
+    }
+
+    public String getRole() {
+        return role;
+    }
+
+    public void setRole(String role) {
+        this.role = role.startsWith("ROLE_") ? role : "ROLE_" + role.toUpperCase();
+    }
+
+    public LocalDateTime getLastLogin() {
+        return lastLogin;
+    }
+
+    public void setLastLogin(LocalDateTime lastLogin) {
+        this.lastLogin = lastLogin;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void setCreatedAt(LocalDateTime createdAt) {
+        this.createdAt = createdAt;
+    }
+
+    public String getProfilePicture() {
+        return profilePicture;
+    }
+
+    public void setProfilePicture(String profilePicture) {
+        this.profilePicture = profilePicture;
+    }
+
+    public List<Order> getOrders() {
+        return orders;
+    }
+
+    public void setOrders(List<Order> orders) {
         this.orders = orders != null ? orders : new ArrayList<>();
     }
-    public List<CartItem> getCartItems() { return cartItems; }
-    public void setCartItems(List<CartItem> cartItems) { 
+
+    public List<CartItem> getCartItems() {
+        return cartItems;
+    }
+
+    public void setCartItems(List<CartItem> cartItems) {
         this.cartItems = cartItems != null ? cartItems : new ArrayList<>();
     }
-    public List<FavoriteItem> getFavoriteItems() { return favoriteItems; }
-    public void setFavoriteItems(List<FavoriteItem> favoriteItems) { 
+
+    public List<FavoriteItem> getFavoriteItems() {
+        return favoriteItems;
+    }
+
+    public void setFavoriteItems(List<FavoriteItem> favoriteItems) {
         this.favoriteItems = favoriteItems != null ? favoriteItems : new ArrayList<>();
     }
-    public List<Address> getAddresses() { return addresses; }
-    public void setAddresses(List<Address> addresses) { 
+
+    public List<Address> getAddresses() {
+        return addresses;
+    }
+
+    public void setAddresses(List<Address> addresses) {
         this.addresses = addresses != null ? addresses : new ArrayList<>();
     }
-    public Boolean isEmailOrderUpdates() { return emailOrderUpdates != null ? emailOrderUpdates : false; }
-    public void setEmailOrderUpdates(Boolean emailOrderUpdates) { this.emailOrderUpdates = emailOrderUpdates; }
-    public Boolean isEmailPromotions() { return emailPromotions != null ? emailPromotions : false; }
-    public void setEmailPromotions(Boolean emailPromotions) { this.emailPromotions = emailPromotions; }
-    public Boolean isDesktopNotifications() { return desktopNotifications != null ? desktopNotifications : false; }
-    public void setDesktopNotifications(Boolean desktopNotifications) { this.desktopNotifications = desktopNotifications; }
 
+    public Boolean isEmailOrderUpdates() {
+        return emailOrderUpdates != null ? emailOrderUpdates : false;
+    }
+
+    public void setEmailOrderUpdates(Boolean emailOrderUpdates) {
+        this.emailOrderUpdates = emailOrderUpdates;
+    }
+
+    public Boolean isEmailPromotions() {
+        return emailPromotions != null ? emailPromotions : false;
+    }
+
+    public void setEmailPromotions(Boolean emailPromotions) {
+        this.emailPromotions = emailPromotions;
+    }
+
+    public Boolean isDesktopNotifications() {
+        return desktopNotifications != null ? desktopNotifications : false;
+    }
+
+    public void setDesktopNotifications(Boolean desktopNotifications) {
+        this.desktopNotifications = desktopNotifications;
+    }
+
+    public boolean isActive() {
+        return active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
+    }
+
+    // NEW: Getter and Setter for passwordChanged
+    public boolean isPasswordChanged() {
+        return passwordChanged;
+    }
+
+    public void setPasswordChanged(boolean passwordChanged) {
+        this.passwordChanged = passwordChanged;
+    }
+
+    public Restaurant getRestaurant() {
+        return restaurant;
+    }
+
+    public void setRestaurant(Restaurant restaurant) {
+        this.restaurant = restaurant;
+        // Keep both sides in sync
+        if (restaurant != null && restaurant.getOwner() != this) {
+            restaurant.setOwner(this);
+        }
+    }
+
+    // Helper methods
     public void addOrder(Order order) {
         if (order != null && !orders.contains(order)) {
             orders.add(order);
@@ -167,11 +317,15 @@ public class User {
                 ", name='" + name + '\'' +
                 ", email='" + email + '\'' +
                 ", role='" + role + '\'' +
+                ", lastLogin=" + lastLogin +
+                ", createdAt=" + createdAt +
                 ", profilePicture='" + profilePicture + '\'' +
                 ", ordersCount=" + getOrdersCount() +
                 ", cartItemsCount=" + getCartItemsCount() +
                 ", favoriteItemsCount=" + getFavoriteItemsCount() +
                 ", addressesCount=" + addresses.size() +
+                ", active=" + active +
+                ", hasRestaurant=" + (restaurant != null) +
                 '}';
     }
 }

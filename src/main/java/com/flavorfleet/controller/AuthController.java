@@ -16,11 +16,13 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
-
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 
+import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -28,7 +30,6 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/auth")
 @CrossOrigin(origins = "http://localhost:8484")
 public class AuthController {
-
     private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
     private static final String EMAIL_REGEX = "^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$";
     private static final String PASSWORD_REGEX = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[@$!%*?&])[A-Za-z\\d@$!%*?&]{8,}$";
@@ -52,21 +53,27 @@ public class AuthController {
                 return ResponseEntity.badRequest()
                         .body(new AdminController.ErrorResponse("Invalid email format"));
             }
-
             Authentication authentication = authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
             );
             SecurityContextHolder.getContext().setAuthentication(authentication);
-
             User user = userService.findByEmail(request.getEmail());
             if (user == null) {
                 logger.warn("User not found in database for email: {}", request.getEmail());
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                         .body(new AdminController.ErrorResponse("User not found"));
             }
-            String token = jwtUtil.generateToken(user.getEmail());
-
-            LoginResponse response = new LoginResponse(token, user.getEmail(), user.getName(), "Login successful");
+            // NEW: Update lastLogin timestamp on successful login
+            user.setLastLogin(LocalDateTime.now());
+            userService.save(user);
+            logger.debug("Updated lastLogin for user: {} at {}", user.getEmail(), user.getLastLogin());
+            // NEW: Generate both access and refresh tokens
+            String accessToken = jwtUtil.generateAccessToken(user.getEmail());
+            String refreshToken = jwtUtil.generateRefreshToken(user.getEmail());
+            // NEW: Store refresh token (assuming UserService has a method to store it)
+            userService.storeRefreshToken(refreshToken, user);
+            LoginResponse response = new LoginResponse(accessToken, user.getEmail(), user.getName(), "Login successful");
+            response.setRefreshToken(refreshToken); // Assuming you add this field to LoginResponse DTO
             logger.info("Login successful for email: {}", request.getEmail());
             return ResponseEntity.ok(response);
         } catch (BadCredentialsException e) {
@@ -94,7 +101,6 @@ public class AuthController {
                 return ResponseEntity.badRequest()
                         .body(new AdminController.ErrorResponse("Invalid email format"));
             }
-
             if (!Pattern.matches(PASSWORD_REGEX, request.getPassword())) {
                 logger.warn("Password does not meet complexity requirements for email: {}", request.getEmail());
                 return ResponseEntity.badRequest()
@@ -102,19 +108,16 @@ public class AuthController {
                                 "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one digit, and one special character (@$!%*?&)"
                         ));
             }
-
             User user = new User();
             user.setName(request.getName());
             user.setEmail(request.getEmail());
             user.setPassword(request.getPassword());
-
             boolean otpSent = userService.sendOtpForSignup(request.getEmail(), user);
             if (!otpSent) {
                 logger.warn("Email already exists: {}", request.getEmail());
                 return ResponseEntity.badRequest()
                         .body(new AdminController.ErrorResponse("Email already exists"));
             }
-
             LoginResponse response = new LoginResponse(null, request.getEmail(), null, "OTP sent to your email for verification");
             logger.info("OTP sent for signup to email: {}", request.getEmail());
             return ResponseEntity.ok(response);
@@ -135,18 +138,54 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                         .body(new AdminController.ErrorResponse("Invalid OTP or email"));
             }
-
-            String token = jwtUtil.generateToken(verifiedUser.getEmail());
-            LoginResponse response = new LoginResponse(token, verifiedUser.getEmail(), verifiedUser.getName(), "Registration successful");
+            // NEW: Generate both tokens
+            String accessToken = jwtUtil.generateAccessToken(verifiedUser.getEmail());
+            String refreshToken = jwtUtil.generateRefreshToken(verifiedUser.getEmail());
+            // NEW: Store refresh token
+            userService.storeRefreshToken(refreshToken, verifiedUser);
+            LoginResponse response = new LoginResponse(accessToken, verifiedUser.getEmail(), verifiedUser.getName(), "Registration successful");
+            response.setRefreshToken(refreshToken); // Assuming added to DTO
             logger.info("Registration successful for email: {}", request.getEmail());
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             logger.error("OTP verification failed for email: {}", request.getEmail(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AdminController.ErrorResponse("OTP verification failed: " + e.getMessage()));
+                .body(new AdminController.ErrorResponse("OTP verification failed: " + e.getMessage()));
         }
     }
 
+    // NEW: Refresh token endpoint
+    @PostMapping("/refresh")
+    public ResponseEntity<?> refreshToken(@RequestBody RefreshTokenRequest refreshRequest) {
+        try {
+            String refreshToken = refreshRequest.getRefreshToken();
+            if (refreshToken == null || refreshToken.isEmpty()) {
+                return ResponseEntity.badRequest().body(new AdminController.ErrorResponse("Refresh token is required"));
+            }
+            // Validate refresh token
+            if (!jwtUtil.validateToken(refreshToken)) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new AdminController.ErrorResponse("Invalid refresh token"));
+            }
+            String email = jwtUtil.getEmailFromToken(refreshToken);
+            // Check if refresh token is stored and valid (in DB)
+            if (!userService.isValidRefreshToken(refreshToken, email)) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new AdminController.ErrorResponse("Invalid or expired refresh token"));
+            }
+            // Generate new access token
+            String newAccessToken = jwtUtil.generateAccessToken(email);
+            // Optionally generate new refresh token and replace old one
+            String newRefreshToken = jwtUtil.generateRefreshToken(email);
+            userService.updateRefreshToken(newRefreshToken, email); // Replace old with new
+            RefreshTokenResponse response = new RefreshTokenResponse(newAccessToken, newRefreshToken);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            logger.error("Token refresh failed: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AdminController.ErrorResponse("Token refresh failed: " + e.getMessage()));
+        }
+    }
+
+    // UPDATED: User profile endpoint (remains for non-admin users: /api/auth/profile)
     @GetMapping("/profile")
     public ResponseEntity<?> getUserProfile(HttpServletRequest request) {
         String email = null;
@@ -158,21 +197,18 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(new AdminController.ErrorResponse("Invalid token: Email not found in token"));
             }
-
             UserDetails userDetails = userService.loadUserByUsername(email);
             if (!jwtUtil.validateToken(token, userDetails)) {
                 logger.warn("Token validation failed for email: {}", email);
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Token validation failed: Token may be expired or invalid"));
             }
-
             User user = userService.findByEmail(email);
             if (user == null) {
                 logger.warn("User not found in database for email: {}", email);
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new AdminController.ErrorResponse("User not found"));
             }
-
             logger.info("Profile fetched successfully for email: {}. Role: {}", email, user.getRole());
             UserProfileDTO profile = new UserProfileDTO(
                     user.getId(),
@@ -202,6 +238,7 @@ public class AuthController {
         }
     }
 
+    // UPDATED: User profile update (remains for non-admin users: /api/auth/profile)
     @PutMapping("/profile")
     public ResponseEntity<?> updateUserProfile(HttpServletRequest request, @Valid @RequestBody UpdateProfileRequest updateRequest) {
         String email = null;
@@ -213,21 +250,18 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Invalid token: Email not found in token"));
             }
-
             UserDetails userDetails = userService.loadUserByUsername(email);
             if (!jwtUtil.validateToken(token, userDetails)) {
                 logger.warn("Token validation failed for email: {}", email);
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Token validation failed: Token may be expired or invalid"));
             }
-
             User user = userService.findByEmail(email);
             if (user == null) {
                 logger.warn("User not found in database for email: {}", email);
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new AdminController.ErrorResponse("User not found"));
             }
-
             // Update only provided fields
             if (updateRequest.getName() != null && !updateRequest.getName().trim().isEmpty()) {
                 user.setName(updateRequest.getName());
@@ -251,9 +285,7 @@ public class AuthController {
             if (updateRequest.getProfilePicture() != null) {
                 user.setProfilePicture(updateRequest.getProfilePicture());
             }
-
             userService.save(user);
-
             logger.info("Profile updated successfully for email: {}", email);
             return ResponseEntity.ok(new AdminController.SuccessResponse("Profile updated successfully"));
         } catch (IllegalArgumentException e) {
@@ -267,6 +299,7 @@ public class AuthController {
         }
     }
 
+    // UPDATED: User address add (remains for non-admin: /api/auth/addresses)
     @PostMapping("/addresses")
     public ResponseEntity<?> addAddress(HttpServletRequest request, @Valid @RequestBody AddressDTO addressDTO) {
         String email = null;
@@ -278,21 +311,18 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(new AdminController.ErrorResponse("Invalid token: Email not found in token"));
             }
-
             UserDetails userDetails = userService.loadUserByUsername(email);
             if (!jwtUtil.validateToken(token, userDetails)) {
                 logger.warn("Token validation failed for email: {}", email);
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Token validation failed: Token may be expired or invalid"));
             }
-
             User user = userService.findByEmail(email);
             if (user == null) {
                 logger.warn("User not found in database for email: {}", email);
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new AdminController.ErrorResponse("User not found"));
             }
-
             Address address = new Address(
                     addressDTO.getLine1(),
                     addressDTO.getLine2(),
@@ -302,7 +332,6 @@ public class AuthController {
             );
             user.addAddress(address);
             userService.save(user);
-
             logger.info("Address added successfully for email: {}", email);
             AddressDTO savedAddress = new AddressDTO(
                     address.getId(),
@@ -319,10 +348,11 @@ public class AuthController {
         } catch (Exception e) {
             logger.error("Address addition failed for email: {}", email != null ? email : "unknown", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AdminController.ErrorResponse("Address addition failed: " + e.getMessage()));
+                .body(new AdminController.ErrorResponse("Address addition failed: " + e.getMessage()));
         }
     }
 
+    // UPDATED: User address update (remains for non-admin: /api/auth/addresses/{addressId})
     @PutMapping("/addresses/{addressId}")
     public ResponseEntity<?> updateAddress(HttpServletRequest request, @PathVariable Long addressId, @Valid @RequestBody AddressDTO addressDTO) {
         String email = null;
@@ -334,21 +364,18 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Invalid token: Email not found in token"));
             }
-
             UserDetails userDetails = userService.loadUserByUsername(email);
             if (!jwtUtil.validateToken(token, userDetails)) {
                 logger.warn("Token validation failed for email: {}", email);
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Token validation failed: Token may be expired or invalid"));
             }
-
             User user = userService.findByEmail(email);
             if (user == null) {
                 logger.warn("User not found in database for email: {}", email);
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new AdminController.ErrorResponse("User not found"));
             }
-
             Address address = user.getAddresses().stream()
                     .filter(addr -> addr.getId().equals(addressId))
                     .findFirst()
@@ -358,13 +385,11 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new AdminController.ErrorResponse("Address not found"));
             }
-
             address.setLine1(addressDTO.getLine1());
             address.setLine2(addressDTO.getLine2());
             address.setCity(addressDTO.getCity());
             address.setPincode(addressDTO.getPincode());
             userService.save(user);
-
             logger.info("Address updated successfully for id: {} and email: {}", addressId, email);
             AddressDTO updatedAddress = new AddressDTO(
                     address.getId(),
@@ -381,10 +406,11 @@ public class AuthController {
         } catch (Exception e) {
             logger.error("Address update failed for id: {} and email: {}", addressId, email != null ? email : "unknown", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AdminController.ErrorResponse("Address update failed: " + e.getMessage()));
+                .body(new AdminController.ErrorResponse("Address update failed: " + e.getMessage()));
         }
     }
 
+    // UPDATED: User address delete (remains for non-admin: /api/auth/addresses/{addressId})
     @DeleteMapping("/addresses/{addressId}")
     public ResponseEntity<?> deleteAddress(HttpServletRequest request, @PathVariable Long addressId) {
         String email = null;
@@ -396,21 +422,18 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Invalid token: Email not found in token"));
             }
-
             UserDetails userDetails = userService.loadUserByUsername(email);
             if (!jwtUtil.validateToken(token, userDetails)) {
                 logger.warn("Token validation failed for email: {}", email);
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Token validation failed: Token may be expired or invalid"));
             }
-
             User user = userService.findByEmail(email);
             if (user == null) {
                 logger.warn("User not found in database for email: {}", email);
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new AdminController.ErrorResponse("User not found"));
             }
-
             Address address = user.getAddresses().stream()
                     .filter(addr -> addr.getId().equals(addressId))
                     .findFirst()
@@ -420,11 +443,9 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body(new AdminController.ErrorResponse("Address not found"));
             }
-
             user.removeAddress(address);
             userService.deleteAddress(address);
             userService.save(user);
-
             logger.info("Address deleted successfully for id: {} and email: {}", addressId, email);
             return ResponseEntity.ok(new AdminController.SuccessResponse("Address deleted successfully"));
         } catch (IllegalArgumentException e) {
@@ -434,10 +455,11 @@ public class AuthController {
         } catch (Exception e) {
             logger.error("Address deletion failed for id: {} and email: {}", addressId, email != null ? email : "unknown", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AdminController.ErrorResponse("Address deletion failed: " + e.getMessage()));
+                .body(new AdminController.ErrorResponse("Address deletion failed: " + e.getMessage()));
         }
     }
 
+    // UPDATED: User change password (remains for non-admin: /api/auth/change-password)
     @PostMapping("/change-password")
     public ResponseEntity<?> changePassword(HttpServletRequest request, @Valid @RequestBody ChangePasswordRequest changeRequest) {
         String email = null;
@@ -445,20 +467,17 @@ public class AuthController {
             String token = extractToken(request);
             email = jwtUtil.getEmailFromToken(token);
             logger.info("Change password request received for email: {}", email);
-
             if (email == null) {
                 logger.warn("Invalid token: unable to extract email");
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Invalid token: Email not found in token"));
             }
-
             UserDetails userDetails = userService.loadUserByUsername(email);
             if (!jwtUtil.validateToken(token, userDetails)) {
                 logger.warn("Token validation failed for email: {}", email);
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new AdminController.ErrorResponse("Token validation failed: Token may be expired or invalid"));
             }
-
             if (!Pattern.matches(PASSWORD_REGEX, changeRequest.getNewPassword())) {
                 logger.warn("New password does not meet complexity requirements for email: {}", email);
                 return ResponseEntity.badRequest()
@@ -466,7 +485,6 @@ public class AuthController {
                                 "New password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one digit, and one special character (@$!%*?&)"
                         ));
             }
-
             boolean success = userService.changePassword(email, changeRequest.getCurrentPassword(), changeRequest.getNewPassword());
             if (success) {
                 logger.info("Password changed successfully for email: {}", email);
@@ -483,7 +501,7 @@ public class AuthController {
         } catch (Exception e) {
             logger.error("Password change failed for email: {}", email != null ? email : "unknown", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AdminController.ErrorResponse("Password change failed: " + e.getMessage()));
+                .body(new AdminController.ErrorResponse("Password change failed: " + e.getMessage()));
         }
     }
 
@@ -496,7 +514,6 @@ public class AuthController {
                 return ResponseEntity.badRequest()
                     .body(new AdminController.ErrorResponse("Invalid email format"));
             }
-
             boolean success = userService.sendOtpForPasswordReset(request.getEmail());
             if (success) {
                 logger.info("OTP sent successfully to email: {}", request.getEmail());
@@ -509,7 +526,7 @@ public class AuthController {
         } catch (Exception e) {
             logger.error("Failed to send OTP for email: {}", request.getEmail(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new AdminController.ErrorResponse("Failed to send OTP: " + e.getMessage()));
+                .body(new AdminController.ErrorResponse("Failed to send OTP: " + e.getMessage()));
         }
     }
 
@@ -522,13 +539,11 @@ public class AuthController {
                 return ResponseEntity.badRequest()
                     .body(new AdminController.ErrorResponse("Invalid email format"));
             }
-
             if (!request.getNewPassword().equals(request.getConfirmPassword())) {
                 logger.warn("Passwords do not match for email: {}", request.getEmail());
                 return ResponseEntity.badRequest()
                     .body(new AdminController.ErrorResponse("Passwords do not match"));
             }
-
             if (!Pattern.matches(PASSWORD_REGEX, request.getNewPassword())) {
                 logger.warn("New password does not meet complexity requirements for email: {}", request.getEmail());
                 return ResponseEntity.badRequest()
@@ -536,7 +551,6 @@ public class AuthController {
                             "New password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one digit, and one special character (@$!%*?&)"
                     ));
             }
-
             boolean success = userService.resetPassword(request.getEmail(), request.getOtp(), request.getNewPassword());
             if (success) {
                 logger.info("Password reset successful for email: {}", request.getEmail());
@@ -550,6 +564,69 @@ public class AuthController {
             logger.error("Reset password failed for email: {}", request.getEmail(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new AdminController.ErrorResponse("Password reset failed: " + e.getMessage()));
+        }
+    }
+
+    // NEW: Endpoint to check if password change is required
+    @GetMapping("/require-password-change")
+    public ResponseEntity<?> checkPasswordChangeRequirement(HttpServletRequest request) {
+        try {
+            String token = extractToken(request);
+            String email = jwtUtil.getEmailFromToken(token);
+            if (email == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new AdminController.ErrorResponse("Invalid token: Email not found in token"));
+            }
+            UserDetails userDetails = userService.loadUserByUsername(email);
+            if (!jwtUtil.validateToken(token, userDetails)) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new AdminController.ErrorResponse("Token validation failed: Token may be expired or invalid"));
+            }
+            User user = userService.findByEmail(email);
+            if (user == null) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(new AdminController.ErrorResponse("User not found"));
+            }
+            Map<String, Object> response = new HashMap<>();
+            response.put("mustChangePassword", !user.isPasswordChanged());
+            response.put("role", user.getRole() != null ? user.getRole().replace("ROLE_", "") : "USER");
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            logger.warn("Authentication error: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new AdminController.ErrorResponse(e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Password change requirement check failed: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AdminController.ErrorResponse("Check failed: " + e.getMessage()));
+        }
+    }
+
+    // NEW: Endpoint to mark password as changed after successful update
+    @PostMapping("/password-changed")
+    public ResponseEntity<?> markPasswordChanged(HttpServletRequest request) {
+        try {
+            String token = extractToken(request);
+            String email = jwtUtil.getEmailFromToken(token);
+            if (email == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new AdminController.ErrorResponse("Invalid token: Email not found in token"));
+            }
+            UserDetails userDetails = userService.loadUserByUsername(email);
+            if (!jwtUtil.validateToken(token, userDetails)) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new AdminController.ErrorResponse("Token validation failed: Token may be expired or invalid"));
+            }
+            userService.markPasswordChanged(email);
+            return ResponseEntity.ok(new AdminController.SuccessResponse("Password change recorded"));
+        } catch (IllegalArgumentException e) {
+            logger.warn("Authentication error: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new AdminController.ErrorResponse(e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Mark password changed failed: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new AdminController.ErrorResponse("Operation failed: " + e.getMessage()));
         }
     }
 
@@ -571,9 +648,9 @@ public class AuthController {
         private int cartItemsCount;
         private int favoriteItemsCount;
         private List<AddressDTO> addresses;
-        private Boolean emailOrderUpdates; // Changed to Boolean
-        private Boolean emailPromotions; // Changed to Boolean
-        private Boolean desktopNotifications; // Changed to Boolean
+        private Boolean emailOrderUpdates;
+        private Boolean emailPromotions;
+        private Boolean desktopNotifications;
 
         public UserProfileDTO(Long id, String name, String email, String role, String profilePicture, int ordersCount,
                              int cartItemsCount, int favoriteItemsCount, List<AddressDTO> addresses,
@@ -592,6 +669,7 @@ public class AuthController {
             this.desktopNotifications = desktopNotifications;
         }
 
+        // Getters and Setters (unchanged)
         public Long getId() { return id; }
         public void setId(Long id) { this.id = id; }
         public String getName() { return name; }
@@ -616,5 +694,30 @@ public class AuthController {
         public void setEmailPromotions(Boolean emailPromotions) { this.emailPromotions = emailPromotions; }
         public Boolean isDesktopNotifications() { return desktopNotifications; }
         public void setDesktopNotifications(Boolean desktopNotifications) { this.desktopNotifications = desktopNotifications; }
+    }
+
+    // NEW: DTO for refresh request
+    public static class RefreshTokenRequest {
+        private String refreshToken;
+
+        public String getRefreshToken() { return refreshToken; }
+        public void setRefreshToken(String refreshToken) { this.refreshToken = refreshToken; }
+    }
+
+    // NEW: DTO for refresh response
+    public static class RefreshTokenResponse {
+        private String accessToken;
+        private String refreshToken;
+
+        public RefreshTokenResponse(String accessToken, String refreshToken) {
+            this.accessToken = accessToken;
+            this.refreshToken = refreshToken;
+        }
+
+        public String getAccessToken() { return accessToken; }
+        public void setAccessToken(String accessToken) { this.accessToken = accessToken; }
+
+        public String getRefreshToken() { return refreshToken; }
+        public void setRefreshToken(String refreshToken) { this.refreshToken = refreshToken; }
     }
 }

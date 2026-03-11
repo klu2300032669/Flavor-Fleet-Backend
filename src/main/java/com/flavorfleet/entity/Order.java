@@ -13,36 +13,51 @@ public class Order {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @ManyToOne
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    @Column(name = "total_price", nullable = false)
     private Double totalPrice;
 
-    private String status;
+    @Column(nullable = false)
+    private String status = "PENDING";  // Default value
 
+    @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
     @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true)
     @JoinColumn(name = "order_id")
     private List<CartItem> items = new ArrayList<>();
 
+    @Column(name = "address_line1", nullable = false)
     private String addressLine1;
+
+    @Column(name = "address_line2")
     private String addressLine2;
+
+    @Column(nullable = false)
     private String city;
+
+    @Column(nullable = false)
     private String pincode;
 
-    // Constructors
+    // Default constructor
     public Order() {
     }
 
+    // Auto-set createdAt and default status when saving new order
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
-        this.status = "PENDING"; // Default status
+        if (this.createdAt == null) {
+            this.createdAt = LocalDateTime.now();
+        }
+        if (this.status == null) {
+            this.status = "PENDING";
+        }
     }
 
-    // Getters and setters
+    // Getters and Setters
     public Long getId() {
         return id;
     }
@@ -72,7 +87,7 @@ public class Order {
     }
 
     public void setStatus(String status) {
-        this.status = status;
+        this.status = status != null ? status.toUpperCase() : "PENDING";
     }
 
     public LocalDateTime getCreatedAt() {
@@ -84,11 +99,11 @@ public class Order {
     }
 
     public List<CartItem> getItems() {
-        return items;
+        return items != null ? items : new ArrayList<>();
     }
 
     public void setItems(List<CartItem> items) {
-        this.items = items;
+        this.items = items != null ? items : new ArrayList<>();
     }
 
     public String getAddressLine1() {
@@ -123,9 +138,27 @@ public class Order {
         this.pincode = pincode;
     }
 
-    // Helper method to add items
+    // Helper method to add items (maintains bidirectional relationship)
     public void addItem(CartItem item) {
-        this.items.add(item);
-        item.setOrder(this); // Ensure bidirectional relationship
+        if (item != null) {
+            if (this.items == null) {
+                this.items = new ArrayList<>();
+            }
+            this.items.add(item);
+            item.setOrder(this);
+        }
+    }
+
+    @Override
+    public String toString() {
+        return "Order{" +
+                "id=" + id +
+                ", userId=" + (user != null ? user.getId() : null) +
+                ", totalPrice=" + totalPrice +
+                ", status='" + status + '\'' +
+                ", createdAt=" + createdAt +
+                ", itemsCount=" + (items != null ? items.size() : 0) +
+                ", city='" + city + '\'' +
+                '}';
     }
 }
